@@ -1,126 +1,155 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import AuditLog from "./components/AuditLog";
+import ConflictPanel from "./components/ConflictPanel";
+import CueForm from "./components/CueForm";
+import CueTable from "./components/CueTable";
+import ModelInventory from "./components/ModelInventory";
+import PlanView from "./components/PlanView";
+import Timeline from "./components/Timeline";
+import { MIN_INTERVAL, ZONES } from "./constants";
+import type { CueDraft } from "./state/reducer";
+import { useBatchStore } from "./state/store";
+import type { Cue } from "./types";
+import { sortedCues } from "./utils/batch";
 
-const project = {
-  "sourceNo": 10,
-  "id": "hxyfront-62008",
-  "port": 62008,
-  "title": "烟花燃放脚本编排",
-  "domain": "烟花燃放编排",
-  "prompt": "我想做一个面向烟花燃放编排师的燃放脚本前端工具，可以记录节目段落、烟花型号、口径、发射角度、点火时间、持续时间、安全距离和音乐时间点。页面需要有时间轴编排、燃放点位平面图、型号清单、冲突时间提示和整场节目预览。",
-  "palette": [
-    "#1d4ed8",
-    "#dc2626",
-    "#f59e0b"
-  ],
-  "metrics": [
-    "节目段落",
-    "点火节点",
-    "冲突提示",
-    "安全距离"
-  ],
-  "filters": [
-    "礼花弹",
-    "罗马烛光",
-    "扇形架",
-    "冷焰火"
-  ],
-  "fields": [
-    "节目段落",
-    "烟花型号",
-    "口径",
-    "发射角度",
-    "点火时间",
-    "安全距离"
-  ],
-  "records": [
-    [
-      "Intro",
-      "30mm扇形架",
-      "00:12.500",
-      "安全距离35m"
-    ],
-    [
-      "Chorus A",
-      "75mm礼花弹",
-      "01:08.200",
-      "与B点位间隔正常"
-    ],
-    [
-      "Finale",
-      "冷焰火",
-      "03:42.000",
-      "近景区待确认"
-    ]
-  ]
-};
+const STATUS_TEXT = {
+  draft: "草稿编排中",
+  locked: "已提交锁定",
+  rejected: "提交被拒绝",
+} as const;
 
 function App() {
+  const { state, dispatch, liveConflicts } = useBatchStore();
+  const [editing, setEditing] = useState<Cue | null>(null);
+
+  const locked = state.status === "locked";
+  const ordered = useMemo(() => sortedCues(state.cues), [state.cues]);
+
+  const shownConflicts =
+    state.status === "locked"
+      ? []
+      : state.status === "rejected" && state.lastRejection
+      ? state.lastRejection.conflicts
+      : liveConflicts;
+
+  const flaggedIds = useMemo(() => {
+    const s = new Set<string>();
+    shownConflicts.forEach((c) => c.cueIds.forEach((id) => s.add(id)));
+    return s;
+  }, [shownConflicts]);
+
+  const handleAdd = (draft: CueDraft) => dispatch({ type: "add", cue: draft });
+  const handleUpdate = (id: string, before: Cue, after: CueDraft) => {
+    dispatch({ type: "update", id, before, after });
+    setEditing(null);
+  };
+  const handleDelete = (cue: Cue) => {
+    if (window.confirm(`确认移除「${cue.model}」？该操作会记入调整记录。`)) {
+      dispatch({ type: "delete", cue });
+      if (editing?.id === cue.id) setEditing(null);
+    }
+  };
+  const handleReset = () => {
+    if (window.confirm("重置为示例编排？当前批次与记录将被覆盖（仅本机数据）。")) {
+      dispatch({ type: "reset" });
+      setEditing(null);
+    }
+  };
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
+      <header className="hero">
+        <div className="hero-top">
+          <p>hxyfront-62008 · 烟花燃放脚本编排台</p>
+          <span className={`status-badge badge-${state.status}`}>
+            ● {STATUS_TEXT[state.status]}
+          </span>
+        </div>
+        <h1>发射批次编排</h1>
+        <span className="hero-desc">
+          每枚烟花按点火秒排序（同秒保持原顺序）；同分区相邻点火间隔不足{" "}
+          {MIN_INTERVAL}s 或发射点落入安全半径，整批拒绝并标出冲突项。
+          提交后锁定编辑，撤回保留全部分配 / 调整记录，刷新页面后继续。
+        </span>
+        <div className="rule-chips">
+          <span>规则 1 · 点火秒稳定排序</span>
+          <span>规则 2 · 同分区相邻 ≥ {MIN_INTERVAL}s</span>
+          <span>规则 3 · 发射点间距 ≥ 较大安全半径</span>
+          <button className="reset-btn" onClick={handleReset}>
+            重置示例数据
+          </button>
+        </div>
+      </header>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
-          </article>
-        ))}
+        <article>
+          <small>批次烟花</small>
+          <strong>{state.cues.length}</strong>
+        </article>
+        <article>
+          <small>使用分区</small>
+          <strong>
+            {new Set(state.cues.map((c) => c.zone)).size}/{ZONES.length}
+          </strong>
+        </article>
+        <article
+          className={shownConflicts.length > 0 ? "metric-alert" : ""}
+        >
+          <small>冲突项</small>
+          <strong>{shownConflicts.length}</strong>
+        </article>
+        <article>
+          <small>操作记录</small>
+          <strong>{state.logs.length}</strong>
+        </article>
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}筛选</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
+      <ConflictPanel
+        status={state.status}
+        conflicts={shownConflicts}
+        rejectionAt={state.lastRejection?.at ?? null}
+        submittedAt={state.submittedAt}
+        cueCount={state.cues.length}
+        onSubmit={() => dispatch({ type: "submit" })}
+        onWithdraw={() => dispatch({ type: "withdraw" })}
+      />
 
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存草稿</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
+      <div className="grid-main">
+        <CueForm
+          editing={editing}
+          locked={locked}
+          onAdd={handleAdd}
+          onUpdate={handleUpdate}
+          onCancelEdit={() => setEditing(null)}
+        />
+        <Timeline cues={ordered} conflicts={shownConflicts} />
+      </div>
 
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      <PlanView
+        cues={ordered}
+        conflicts={shownConflicts}
+        locked={locked}
+      />
+
+      <CueTable
+        cues={ordered}
+        conflicts={shownConflicts}
+        locked={locked}
+        editingId={editing?.id ?? null}
+        onEdit={setEditing}
+        onDelete={handleDelete}
+      />
+
+      <div className="grid-side">
+        <ModelInventory cues={state.cues} />
+        <AuditLog logs={state.logs} />
+      </div>
+
+      <footer className="foot">
+        批次数据保存在本机浏览器（localStorage）：{flaggedIds.size}
+        {"  "}枚烟花当前被冲突标记。刷新 / 重开页面后锁定状态与全部记录继续保留。
+      </footer>
     </main>
   );
 }
